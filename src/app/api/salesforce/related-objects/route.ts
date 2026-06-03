@@ -42,7 +42,7 @@ export async function GET(request: Request) {
       globalDescribe.sobjects.map((object) => [object.name, object]),
     );
     const seenRelationships = new Set<string>();
-    const relatedObjects =
+    const relatedObjectCandidates =
       sourceDescribe.childRelationships
         ?.filter((relationship) => {
           const childObject = createableObjects.get(relationship.childSObject);
@@ -60,17 +60,38 @@ export async function GET(request: Request) {
             !relationship.deprecatedAndHidden
           );
         })
-        .map((relationship) => {
+        .map((relationship) => ({
+          childSObject: relationship.childSObject,
+          field: relationship.field,
+          relationshipName: relationship.relationshipName ?? "",
+        })) ?? [];
+    const relatedObjects = (
+      await Promise.all(
+        relatedObjectCandidates.map(async (relationship) => {
           const childObject = createableObjects.get(relationship.childSObject);
+          const childDescribe = await connection
+            .sobject(relationship.childSObject)
+            .describe();
+          const lookupField = childDescribe.fields.find(
+            (field) => field.name === relationship.field,
+          );
+
+          if (!lookupField?.referenceTo?.includes(objectApiName)) {
+            return null;
+          }
 
           return {
             fieldApiName: relationship.field,
+            fieldLabel: lookupField.label,
             label: childObject?.label ?? relationship.childSObject,
             name: relationship.childSObject,
-            relationshipName: relationship.relationshipName ?? "",
+            relationshipName: relationship.relationshipName,
           };
-        })
-        .sort((first, second) => first.label.localeCompare(second.label)) ?? [];
+        }),
+      )
+    )
+      .filter((object): object is NonNullable<typeof object> => Boolean(object))
+      .sort((first, second) => first.label.localeCompare(second.label));
 
     return NextResponse.json({ relatedObjects });
   } catch (error) {

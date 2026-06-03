@@ -44,6 +44,7 @@ type SalesforceRecordType = {
 
 type RelatedObject = {
   fieldApiName: string;
+  fieldLabel?: string;
   label: string;
   name: string;
   relationshipName: string;
@@ -540,6 +541,8 @@ export default function ObjectsPage() {
     RelatedRecordConfig[]
   >([]);
   const [isFieldsSectionOpen, setIsFieldsSectionOpen] = useState(true);
+  const [isRelatedRecordsSectionOpen, setIsRelatedRecordsSectionOpen] =
+    useState(true);
   const [username, setUsername] = useState("");
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
@@ -741,6 +744,18 @@ export default function ObjectsPage() {
           object.fieldApiName === config.lookupFieldApiName,
       )?.label ?? config.objectApiName
     );
+  }
+
+  function getRelatedLookupLabel(config: RelatedRecordConfig) {
+    const relatedObject = relatedObjects.find(
+      (object) =>
+        object.name === config.objectApiName &&
+        object.fieldApiName === config.lookupFieldApiName,
+    );
+
+    return relatedObject?.fieldLabel
+      ? `${relatedObject.fieldLabel} (${config.lookupFieldApiName})`
+      : config.lookupFieldApiName;
   }
 
   function updateRelatedConfig(
@@ -1405,17 +1420,53 @@ export default function ObjectsPage() {
             <div className="rounded-2xl border border-purple-200 bg-purple-50/60">
               <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <h2 className="text-lg font-semibold text-indigo-950">
-                    Create multiple related records
-                  </h2>
-                  <p className="mt-1 text-sm leading-6 text-indigo-900/70">
-                    Add Opportunity, Contact, Case, Task, or any available
-                    related object and create child records for every{" "}
-                    {selectedObjectLabel} record.
-                  </p>
+                  <button
+                    aria-controls="multiple-related-records-section"
+                    aria-expanded={isRelatedRecordsSectionOpen}
+                    className="group flex items-start gap-3 rounded-2xl px-2 py-1 text-left transition hover:bg-purple-100/70"
+                    onClick={() =>
+                      setIsRelatedRecordsSectionOpen(
+                        (currentValue) => !currentValue,
+                      )
+                    }
+                    type="button"
+                  >
+                    <span
+                      className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-purple-600 to-blue-600 text-sm font-bold text-white shadow-lg shadow-purple-500/20 transition duration-300 group-hover:scale-105 ${
+                        isRelatedRecordsSectionOpen ? "rotate-90" : ""
+                      }`}
+                      aria-hidden="true"
+                    >
+                      &gt;
+                    </span>
+                    <span>
+                      <span className="block text-lg font-semibold text-indigo-950">
+                        Create multiple related records
+                      </span>
+                      <span className="mt-1 block text-sm leading-6 text-indigo-900/70">
+                        Add Opportunity, Contact, Case, Task, or any available
+                        related object and create child records for every{" "}
+                        {selectedObjectLabel} record.
+                      </span>
+                    </span>
+                  </button>
                 </div>
 
                 <div className="flex flex-col gap-2 sm:items-end">
+                  <button
+                    className="rounded-xl border border-purple-200 bg-white px-4 py-2 text-sm font-semibold text-indigo-950 transition hover:bg-purple-100"
+                    onClick={() =>
+                      setIsRelatedRecordsSectionOpen(
+                        (currentValue) => !currentValue,
+                      )
+                    }
+                    type="button"
+                  >
+                    {isRelatedRecordsSectionOpen
+                      ? "Hide related records"
+                      : "Show related records"}
+                  </button>
+
                   <div className="rounded-xl bg-white px-3 py-2 text-sm font-semibold text-purple-900">
                     {relatedRecordConfigs.length
                       ? `${relatedRecordConfigs.length} related object ${
@@ -1442,7 +1493,11 @@ export default function ObjectsPage() {
                 </div>
               </div>
 
-              <div className="space-y-4 border-t border-purple-200 p-4">
+              {isRelatedRecordsSectionOpen ? (
+              <div
+                className="space-y-4 border-t border-purple-200 p-4"
+                id="multiple-related-records-section"
+              >
                 <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
                   <div>
                     <label
@@ -1473,7 +1528,8 @@ export default function ObjectsPage() {
                           value={`${object.name}|${object.fieldApiName}`}
                         >
                           {object.label} ({object.name}) via{" "}
-                          {object.fieldApiName}
+                          {object.fieldLabel ?? object.fieldApiName}
+                          {object.fieldLabel ? ` (${object.fieldApiName})` : ""}
                         </option>
                       ))}
                     </select>
@@ -1541,7 +1597,7 @@ export default function ObjectsPage() {
                               {config.objectApiName})
                             </h3>
                             <p className="mt-1 text-sm text-indigo-900/70">
-                              Linked through {config.lookupFieldApiName}.
+                              Linked through {getRelatedLookupLabel(config)}.
                             </p>
                           </div>
 
@@ -1587,7 +1643,9 @@ export default function ObjectsPage() {
                               }
                               type="button"
                             >
-                              {config.isCollapsed ? "Expand" : "Collapse"}
+                              {config.isCollapsed
+                                ? "Show fields"
+                                : "Hide fields"}
                             </button>
 
                             <button
@@ -1734,6 +1792,15 @@ export default function ObjectsPage() {
                   </div>
                 )}
               </div>
+              ) : (
+                <div
+                  className="border-t border-purple-200 bg-purple-100/70 px-4 py-3 text-sm text-purple-950"
+                  id="multiple-related-records-section"
+                >
+                  Related record options are hidden. Click Show related records
+                  to add or edit related objects.
+                </div>
+              )}
             </div>
 
             {/* Legacy single-related-record panel removed from render path to keep field editing responsive.
