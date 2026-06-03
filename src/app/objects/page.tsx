@@ -25,11 +25,31 @@ type FieldRow = SalesforceField & {
   value: string;
 };
 
+type RelatedRecordConfig = {
+  clearGeneratedValues: boolean;
+  fieldRows: FieldRow[];
+  id: string;
+  isCollapsed: boolean;
+  isLoadingFields: boolean;
+  lookupFieldApiName: string;
+  objectApiName: string;
+  recordCount: number;
+};
+
 type SalesforceRecordType = {
   default: boolean;
   label: string;
   value: string;
 };
+
+type RelatedObject = {
+  fieldApiName: string;
+  label: string;
+  name: string;
+  relationshipName: string;
+};
+
+const preferredRelatedObjectNames = ["Opportunity", "Contact", "Case", "Task"];
 
 type SampleCategory =
   | "agriculture"
@@ -514,11 +534,18 @@ export default function ObjectsPage() {
   const [objects, setObjects] = useState<SalesforceObject[]>([]);
   const [selectedObject, setSelectedObject] = useState("");
   const [fieldRows, setFieldRows] = useState<FieldRow[]>([]);
+  const [relatedObjects, setRelatedObjects] = useState<RelatedObject[]>([]);
+  const [newRelatedObjectKey, setNewRelatedObjectKey] = useState("");
+  const [relatedRecordConfigs, setRelatedRecordConfigs] = useState<
+    RelatedRecordConfig[]
+  >([]);
+  const [isFieldsSectionOpen, setIsFieldsSectionOpen] = useState(true);
   const [username, setUsername] = useState("");
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const [isLoadingObjects, setIsLoadingObjects] = useState(true);
   const [isLoadingFields, setIsLoadingFields] = useState(false);
+  const [isLoadingRelatedObjects, setIsLoadingRelatedObjects] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [clearGeneratedValues, setClearGeneratedValues] = useState(false);
   const [recordCount, setRecordCount] = useState(1);
@@ -531,6 +558,40 @@ export default function ObjectsPage() {
       "selected object"
     );
   }, [objects, selectedObject]);
+
+  const relatedObjectOptions = useMemo(() => {
+    const configuredKeys = new Set(
+      relatedRecordConfigs.map(
+        (config) => `${config.objectApiName}|${config.lookupFieldApiName}`,
+      ),
+    );
+
+    return relatedObjects.filter(
+      (object) => !configuredKeys.has(`${object.name}|${object.fieldApiName}`),
+    );
+  }, [relatedObjects, relatedRecordConfigs]);
+
+  const preferredRelatedObjects = useMemo(() => {
+    return preferredRelatedObjectNames
+      .map((objectName) =>
+        relatedObjectOptions.find((object) => object.name === objectName),
+      )
+      .filter((object): object is RelatedObject => Boolean(object));
+  }, [relatedObjectOptions]);
+
+  const totalRelatedRecordCount = useMemo(() => {
+    return relatedRecordConfigs.reduce(
+      (total, config) => total + recordCount * config.recordCount,
+      0,
+    );
+  }, [recordCount, relatedRecordConfigs]);
+
+  const isLoadingAnyRelatedFields = relatedRecordConfigs.some(
+    (config) => config.isLoadingFields,
+  );
+  const areAllRelatedRecordsCollapsed =
+    relatedRecordConfigs.length > 0 &&
+    relatedRecordConfigs.every((config) => config.isCollapsed);
 
   useEffect(() => {
     async function loadObjects() {
@@ -622,12 +683,209 @@ export default function ObjectsPage() {
     loadFields();
   }, [selectedObject]);
 
+  useEffect(() => {
+    if (!selectedObject) {
+      return;
+    }
+
+    async function loadRelatedObjects() {
+      setIsLoadingRelatedObjects(true);
+      setNewRelatedObjectKey("");
+      setRelatedRecordConfigs([]);
+
+      try {
+        const response = await fetch(
+          `/api/salesforce/related-objects?objectApiName=${encodeURIComponent(
+            selectedObject,
+          )}`,
+        );
+        const data = (await response.json()) as {
+          error?: string;
+          relatedObjects?: RelatedObject[];
+        };
+
+        if (!response.ok) {
+          throw new Error(data.error ?? "Unable to load related objects.");
+        }
+
+        setRelatedObjects(data.relatedObjects ?? []);
+        setNewRelatedObjectKey("");
+      } catch (caughtError) {
+        setRelatedObjects([]);
+        setError(
+          caughtError instanceof Error
+            ? caughtError.message
+            : "Unable to load related objects.",
+        );
+      } finally {
+        setIsLoadingRelatedObjects(false);
+      }
+    }
+
+    loadRelatedObjects();
+  }, [selectedObject]);
+
   function updateFieldValue(apiName: string, value: string) {
     setFieldRows((currentRows) =>
       currentRows.map((field) =>
         field.apiName === apiName ? { ...field, value } : field,
       ),
     );
+  }
+
+  function getRelatedObjectLabel(config: RelatedRecordConfig) {
+    return (
+      relatedObjects.find(
+        (object) =>
+          object.name === config.objectApiName &&
+          object.fieldApiName === config.lookupFieldApiName,
+      )?.label ?? config.objectApiName
+    );
+  }
+
+  function updateRelatedConfig(
+    configId: string,
+    updateConfig: (config: RelatedRecordConfig) => RelatedRecordConfig,
+  ) {
+    setRelatedRecordConfigs((currentConfigs) =>
+      currentConfigs.map((config) =>
+        config.id === configId ? updateConfig(config) : config,
+      ),
+    );
+  }
+
+  function buildRecordFields(rows: FieldRow[]) {
+    return rows.reduce<Record<string, unknown>>((record, field) => {
+      const value = convertValueForSalesforce(field);
+
+      if (value !== null) {
+        record[field.apiName] = value;
+      }
+
+      return record;
+    }, {});
+  }
+
+  async function loadRelatedFieldsForConfig(
+    configId: string,
+    objectApiName: string,
+  ) {
+    updateRelatedConfig(configId, (config) => ({
+      ...config,
+      fieldRows: [],
+      isLoadingFields: true,
+    }));
+
+    try {
+      const response = await fetch(
+        `/api/salesforce/fields?objectApiName=${encodeURIComponent(
+          objectApiName,
+        )}`,
+      );
+      const data = (await response.json()) as {
+        defaultRecordTypeId?: string;
+        error?: string;
+        fields?: SalesforceField[];
+        recordTypes?: SalesforceRecordType[];
+      };
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Unable to load related Salesforce fields.");
+      }
+
+      const recordTypes = data.recordTypes ?? [];
+      const recordTypeRow: FieldRow = {
+        apiName: "RecordTypeId",
+        dataType: "recordtype",
+        disabled: !recordTypes.length,
+        label: "Record Type",
+        picklistValues: recordTypes,
+        required: false,
+        value: data.defaultRecordTypeId ?? "",
+      };
+      const rows = (data.fields ?? []).map((field) => ({
+        ...field,
+        value: getSampleValue(field, sampleCategoryRef.current),
+      }));
+
+      updateRelatedConfig(configId, (config) => ({
+        ...config,
+        fieldRows: [recordTypeRow, ...rows],
+        isLoadingFields: false,
+      }));
+    } catch (caughtError) {
+      updateRelatedConfig(configId, (config) => ({
+        ...config,
+        fieldRows: [],
+        isLoadingFields: false,
+      }));
+      setError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Unable to load related Salesforce fields.",
+      );
+    }
+  }
+
+  function handleAddRelatedObject(relatedObjectKey = newRelatedObjectKey) {
+    const relatedObject = relatedObjectOptions.find(
+      (object) => `${object.name}|${object.fieldApiName}` === relatedObjectKey,
+    );
+
+    if (!relatedObject) {
+      return;
+    }
+
+    const configId = `${relatedObject.name}-${relatedObject.fieldApiName}-${Date.now()}`;
+    setError("");
+    setSuccessMessage("");
+    setNewRelatedObjectKey("");
+    setRelatedRecordConfigs((currentConfigs) => [
+      ...currentConfigs,
+      {
+        clearGeneratedValues: false,
+        fieldRows: [],
+        id: configId,
+        isCollapsed: false,
+        isLoadingFields: true,
+        lookupFieldApiName: relatedObject.fieldApiName,
+        objectApiName: relatedObject.name,
+        recordCount: 1,
+      },
+    ]);
+    void loadRelatedFieldsForConfig(configId, relatedObject.name);
+  }
+
+  function handleRemoveRelatedObject(configId: string) {
+    setRelatedRecordConfigs((currentConfigs) =>
+      currentConfigs.filter((config) => config.id !== configId),
+    );
+  }
+
+  function toggleRelatedConfigCollapse(configId: string) {
+    updateRelatedConfig(configId, (config) => ({
+      ...config,
+      isCollapsed: !config.isCollapsed,
+    }));
+  }
+
+  function setAllRelatedConfigsCollapsed(isCollapsed: boolean) {
+    setRelatedRecordConfigs((currentConfigs) =>
+      currentConfigs.map((config) => ({ ...config, isCollapsed })),
+    );
+  }
+
+  function updateRelatedFieldValue(
+    configId: string,
+    apiName: string,
+    value: string,
+  ) {
+    updateRelatedConfig(configId, (config) => ({
+      ...config,
+      fieldRows: config.fieldRows.map((field) =>
+        field.apiName === apiName ? { ...field, value } : field,
+      ),
+    }));
   }
 
   function refreshSampleValues() {
@@ -641,6 +899,18 @@ export default function ObjectsPage() {
     );
   }
 
+  function refreshRelatedSampleValues(configId: string) {
+    updateRelatedConfig(configId, (config) => ({
+      ...config,
+      clearGeneratedValues: false,
+      fieldRows: config.fieldRows.map((field) =>
+        field.apiName === "RecordTypeId"
+          ? field
+          : { ...field, value: getSampleValue(field, sampleCategory) },
+      ),
+    }));
+  }
+
   function handleSampleCategoryChange(category: SampleCategory) {
     sampleCategoryRef.current = category;
     setSampleCategory(category);
@@ -651,6 +921,17 @@ export default function ObjectsPage() {
           ? field
           : { ...field, value: getSampleValue(field, category) },
       ),
+    );
+    setRelatedRecordConfigs((currentConfigs) =>
+      currentConfigs.map((config) => ({
+        ...config,
+        clearGeneratedValues: false,
+        fieldRows: config.fieldRows.map((field) =>
+          field.apiName === "RecordTypeId"
+            ? field
+            : { ...field, value: getSampleValue(field, category) },
+        ),
+      })),
     );
   }
 
@@ -670,6 +951,33 @@ export default function ObjectsPage() {
     );
   }
 
+  function handleClearRelatedGeneratedValues(
+    configId: string,
+    checked: boolean,
+  ) {
+    updateRelatedConfig(configId, (config) => ({
+      ...config,
+      clearGeneratedValues: checked,
+      fieldRows: config.fieldRows.map((field) => {
+        if (field.apiName === "RecordTypeId") {
+          return field;
+        }
+
+        return {
+          ...field,
+          value: checked ? "" : getSampleValue(field, sampleCategory),
+        };
+      }),
+    }));
+  }
+
+  function updateRelatedRecordCount(configId: string, value: number) {
+    updateRelatedConfig(configId, (config) => ({
+      ...config,
+      recordCount: Math.min(50, Math.max(1, value || 1)),
+    }));
+  }
+
   async function handleCreateRecord(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -677,15 +985,7 @@ export default function ObjectsPage() {
     setIsCreating(true);
 
     try {
-      const fields = fieldRows.reduce<Record<string, unknown>>((record, field) => {
-        const value = convertValueForSalesforce(field);
-
-        if (value !== null) {
-          record[field.apiName] = value;
-        }
-
-        return record;
-      }, {});
+      const fields = buildRecordFields(fieldRows);
       const records = Array.from({ length: recordCount }, () => fields);
 
       const response = await fetch("/api/salesforce/records", {
@@ -708,10 +1008,68 @@ export default function ObjectsPage() {
         throw new Error(data.error ?? "Unable to create the Salesforce record.");
       }
 
+      const parentIds = data.ids ?? [];
+      let relatedCreatedCount = 0;
+      const relatedCreatedLabels: string[] = [];
+
+      if (relatedRecordConfigs.length) {
+        if (!parentIds.length) {
+          throw new Error(
+            "Salesforce created the source records but did not return their IDs.",
+          );
+        }
+
+        for (const config of relatedRecordConfigs) {
+          const relatedFields = buildRecordFields(config.fieldRows);
+          const relatedRecords = parentIds.flatMap((parentId) =>
+            Array.from({ length: config.recordCount }, () => ({
+              ...relatedFields,
+              [config.lookupFieldApiName]: parentId,
+            })),
+          );
+
+          const relatedResponse = await fetch("/api/salesforce/records", {
+            body: JSON.stringify({
+              fields: relatedRecords,
+              objectApiName: config.objectApiName,
+            }),
+            headers: {
+              "Content-Type": "application/json",
+            },
+            method: "POST",
+          });
+          const relatedData = (await relatedResponse.json()) as {
+            count?: number;
+            error?: string;
+          };
+
+          if (!relatedResponse.ok) {
+            throw new Error(
+              relatedData.error ??
+                `Source records were created, but ${getRelatedObjectLabel(
+                  config,
+                )} records failed.`,
+            );
+          }
+
+          const createdCount = relatedData.count ?? relatedRecords.length;
+          relatedCreatedCount += createdCount;
+          relatedCreatedLabels.push(
+            `${createdCount} ${getRelatedObjectLabel(config)} ${
+              createdCount === 1 ? "record" : "records"
+            }`,
+          );
+        }
+      }
+
       setSuccessMessage(
         `Created ${data.count ?? recordCount} ${selectedObjectLabel} ${
           (data.count ?? recordCount) === 1 ? "record" : "records"
-        }.`,
+        }${
+          relatedCreatedCount
+            ? ` and ${relatedCreatedLabels.join(", ")}.`
+            : "."
+        }`,
       );
     } catch (caughtError) {
       setError(
@@ -725,29 +1083,29 @@ export default function ObjectsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 px-6 py-10 text-slate-950">
-      <section className="mx-auto max-w-3xl rounded-3xl bg-white p-8 shadow-2xl shadow-slate-950/30">
+    <main className="min-h-screen bg-gradient-to-br from-orange-100 via-white to-purple-100 px-6 py-10 text-indigo-950">
+      <section className="mx-auto max-w-6xl rounded-3xl border border-orange-200/70 bg-white/95 p-8 shadow-2xl shadow-orange-900/15 backdrop-blur">
         <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <p className="mb-3 text-sm font-semibold uppercase tracking-[0.3em] text-blue-600">
+            <p className="mb-3 text-sm font-semibold uppercase tracking-[0.3em] text-orange-600">
               Salesforce
             </p>
             <h1 className="text-3xl font-bold tracking-tight">
               Create a Salesforce record
             </h1>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-indigo-900/70">
               Select a creatable Salesforce object, review its fields, and edit
               the generated sample values before creating a record.
             </p>
             {username ? (
-              <p className="mt-2 text-xs text-slate-500">
+              <p className="mt-2 text-xs text-blue-800">
                 Connected as {username}
               </p>
             ) : null}
           </div>
 
           <button
-            className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100"
+            className="rounded-xl border border-orange-200 px-4 py-2 text-sm font-semibold text-indigo-950 transition hover:bg-orange-50"
             onClick={() => router.push("/")}
             type="button"
           >
@@ -756,7 +1114,7 @@ export default function ObjectsPage() {
         </div>
 
         {isLoadingObjects ? (
-          <div className="rounded-2xl bg-slate-100 px-4 py-6 text-center text-sm text-slate-600">
+          <div className="rounded-2xl bg-blue-50 px-4 py-6 text-center text-sm text-blue-900">
             Loading Salesforce objects...
           </div>
         ) : (
@@ -764,17 +1122,18 @@ export default function ObjectsPage() {
             <div className="grid gap-4 sm:grid-cols-[1fr_240px_180px]">
               <div>
                 <label
-                  className="mb-2 block text-sm font-medium text-slate-700"
+                  className="mb-2 block text-sm font-medium text-indigo-950"
                   htmlFor="salesforce-object"
                 >
                   Salesforce object
                 </label>
                 <select
-                  className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                  className="w-full rounded-xl border border-orange-200 bg-white px-4 py-3 text-indigo-950 outline-none transition focus:border-purple-600 focus:ring-4 focus:ring-purple-100"
                   disabled={!objects.length}
                   id="salesforce-object"
                   onChange={(event) => {
                     setClearGeneratedValues(false);
+                    setIsFieldsSectionOpen(true);
                     setSelectedObject(event.target.value);
                   }}
                   value={selectedObject}
@@ -789,13 +1148,13 @@ export default function ObjectsPage() {
 
               <div>
                 <label
-                  className="mb-2 block text-sm font-medium text-slate-700"
+                  className="mb-2 block text-sm font-medium text-indigo-950"
                   htmlFor="sample-category"
                 >
                   Sample data category
                 </label>
                 <select
-                  className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                  className="w-full rounded-xl border border-orange-200 bg-white px-4 py-3 text-indigo-950 outline-none transition focus:border-purple-600 focus:ring-4 focus:ring-purple-100"
                   id="sample-category"
                   onChange={(event) =>
                     handleSampleCategoryChange(
@@ -814,13 +1173,13 @@ export default function ObjectsPage() {
 
               <div>
                 <label
-                  className="mb-2 block text-sm font-medium text-slate-700"
+                  className="mb-2 block text-sm font-medium text-indigo-950"
                   htmlFor="record-count"
                 >
                   Number of records
                 </label>
                 <input
-                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                  className="w-full rounded-xl border border-orange-200 px-4 py-3 text-indigo-950 outline-none transition focus:border-purple-600 focus:ring-4 focus:ring-purple-100"
                   id="record-count"
                   max={200}
                   min={1}
@@ -838,153 +1197,835 @@ export default function ObjectsPage() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-950">
-                  Fields for {selectedObjectLabel}
-                </h2>
-                <p className="text-sm leading-6 text-slate-600">
-                  The Value column is generated from each Salesforce data type.
-                </p>
-              </div>
-
-              <div className="flex flex-col gap-3 sm:items-end">
-                <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
-                  <input
-                    checked={clearGeneratedValues}
-                    className="h-4 w-4 rounded border-slate-300 text-blue-600"
-                    disabled={isLoadingFields || !fieldRows.length}
-                    onChange={(event) =>
-                      handleClearGeneratedValues(event.target.checked)
-                    }
-                    type="checkbox"
-                  />
-                  Clear generated values
-                </label>
-
+            <div className="rounded-2xl border border-orange-200">
+              <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
                 <button
-                  className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={isLoadingFields || !fieldRows.length}
-                  onClick={refreshSampleValues}
+                  aria-controls="salesforce-fields-section"
+                  aria-expanded={isFieldsSectionOpen}
+                  className="group flex items-start gap-3 rounded-2xl px-2 py-1 text-left transition hover:bg-orange-50"
+                  onClick={() =>
+                    setIsFieldsSectionOpen((currentValue) => !currentValue)
+                  }
                   type="button"
                 >
-                  Generate values
+                  <span
+                    className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-orange-500 to-purple-600 text-sm font-bold text-white shadow-lg shadow-orange-500/20 transition duration-300 group-hover:scale-105 ${
+                      isFieldsSectionOpen ? "rotate-90" : ""
+                    }`}
+                    aria-hidden="true"
+                  >
+                    &gt;
+                  </span>
+                  <span>
+                    <span className="flex items-center gap-2 text-lg font-semibold text-indigo-950">
+                      Fields for {selectedObjectLabel}
+                    </span>
+                    <span
+                      className="mt-1 block text-sm leading-6 text-indigo-900/70"
+                    >
+                      {isFieldsSectionOpen
+                        ? "Click to hide fields for this object."
+                        : `Click to show ${fieldRows.length} fields for this object.`}
+                    </span>
+                  </span>
                 </button>
-              </div>
-            </div>
 
-            <div className="overflow-hidden rounded-2xl border border-slate-200">
-              {isLoadingFields ? (
-                <div className="bg-slate-50 px-4 py-8 text-center text-sm text-slate-600">
-                  Loading Salesforce fields...
-                </div>
-              ) : fieldRows.length ? (
-                <div className="max-h-[65vh] overflow-auto">
-                  <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-                    <thead className="sticky top-0 z-10 bg-slate-100 text-xs uppercase tracking-wide text-slate-600">
-                      <tr>
-                        <th className="px-4 py-3 font-semibold">Field Name</th>
-                        <th className="px-4 py-3 font-semibold">API</th>
-                        <th className="px-4 py-3 font-semibold">Data Type</th>
-                        <th className="px-4 py-3 font-semibold">Value</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {fieldRows.map((field) => (
-                        <tr key={field.apiName} className="align-top">
-                          <td className="px-4 py-3 font-medium text-slate-900">
-                            <div
-                              className={
-                                field.required
-                                  ? "rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-red-700"
-                                  : ""
-                              }
-                            >
-                              {field.label}
-                              {field.required ? (
-                                <span className="ml-1 font-bold">*</span>
-                              ) : null}
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600">
-                            {field.apiName}
-                          </td>
-                          <td className="px-4 py-3 text-slate-600">
-                            {field.dataType}
-                          </td>
-                          <td className="min-w-64 px-4 py-3">
-                            {field.dataType === "recordtype" ? (
-                              <select
-                                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
-                                disabled={field.disabled}
-                                onChange={(event) =>
-                                  updateFieldValue(field.apiName, event.target.value)
-                                }
-                                value={field.value}
-                              >
-                                {field.picklistValues.length ? (
-                                  field.picklistValues.map((recordType) => (
-                                    <option
-                                      key={recordType.value}
-                                      value={recordType.value}
-                                    >
-                                      {recordType.label}
-                                    </option>
-                                  ))
-                                ) : (
-                                  <option value="">No record types available</option>
-                                )}
-                              </select>
-                            ) : field.dataType === "boolean" ? (
-                              <select
-                                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
-                                onChange={(event) =>
-                                  updateFieldValue(field.apiName, event.target.value)
-                                }
-                                value={field.value}
-                              >
-                                <option value="true">true</option>
-                                <option value="false">false</option>
-                              </select>
-                            ) : field.dataType === "picklist" ? (
-                              <select
-                                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
-                                onChange={(event) =>
-                                  updateFieldValue(field.apiName, event.target.value)
-                                }
-                                value={field.value}
-                              >
-                                <option value="">Select a value</option>
-                                {field.picklistValues.map((picklistValue) => (
-                                  <option
-                                    key={picklistValue.value}
-                                    value={picklistValue.value}
+                {isFieldsSectionOpen ? (
+                  <div className="flex flex-col gap-3 sm:items-end">
+                    <label className="flex items-center gap-2 text-sm font-medium text-indigo-950">
+                      <input
+                        checked={clearGeneratedValues}
+                        className="h-4 w-4 rounded border-orange-300 text-orange-600 focus:ring-purple-500"
+                        disabled={isLoadingFields || !fieldRows.length}
+                        onChange={(event) =>
+                          handleClearGeneratedValues(event.target.checked)
+                        }
+                        type="checkbox"
+                      />
+                      Clear generated values
+                    </label>
+
+                    <button
+                      className="rounded-xl border border-orange-200 px-4 py-2 text-sm font-semibold text-indigo-950 transition hover:bg-orange-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={isLoadingFields || !fieldRows.length}
+                      onClick={refreshSampleValues}
+                      type="button"
+                    >
+                      Generate values
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+
+              {isFieldsSectionOpen ? (
+                <div
+                  className="overflow-hidden border-t border-orange-200"
+                  id="salesforce-fields-section"
+                >
+                  {isLoadingFields ? (
+                    <div className="bg-blue-50 px-4 py-8 text-center text-sm text-blue-900">
+                      Loading Salesforce fields...
+                    </div>
+                  ) : fieldRows.length ? (
+                    <div className="max-h-[65vh] overflow-y-auto overflow-x-hidden">
+                      <table className="w-full table-fixed divide-y divide-orange-100 text-left text-sm">
+                        <thead className="sticky top-0 z-10 bg-orange-50 text-xs uppercase tracking-wide text-indigo-900">
+                          <tr>
+                            <th className="w-[24%] px-4 py-3 font-semibold">
+                              Field Name
+                            </th>
+                            <th className="w-[30%] px-4 py-3 font-semibold">API</th>
+                            <th className="w-[14%] px-4 py-3 font-semibold">
+                              Data Type
+                            </th>
+                            <th className="w-[32%] px-4 py-3 font-semibold">Value</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-orange-100 bg-white">
+                          {fieldRows.map((field) => (
+                            <tr key={field.apiName} className="align-top">
+                              <td className="break-words px-4 py-3 font-medium text-indigo-950">
+                                <div
+                                  className={
+                                    field.required
+                                      ? "rounded-lg border border-orange-300 bg-orange-50 px-3 py-2 text-orange-700"
+                                      : ""
+                                  }
+                                >
+                                  {field.label}
+                                  {field.required ? (
+                                    <span className="ml-1 font-bold">*</span>
+                                  ) : null}
+                                </div>
+                              </td>
+                              <td className="break-all px-4 py-3 font-mono text-xs text-blue-900">
+                                {field.apiName}
+                              </td>
+                              <td className="break-words px-4 py-3 text-indigo-900/70">
+                                {field.dataType}
+                              </td>
+                              <td className="px-4 py-3">
+                                {field.dataType === "recordtype" ? (
+                                  <select
+                                    className="w-full rounded-lg border border-orange-200 bg-white px-3 py-2 text-indigo-950 outline-none focus:border-purple-600 focus:ring-4 focus:ring-purple-100 disabled:cursor-not-allowed disabled:bg-orange-50 disabled:text-indigo-400"
+                                    disabled={field.disabled}
+                                    onChange={(event) =>
+                                      updateFieldValue(
+                                        field.apiName,
+                                        event.target.value,
+                                      )
+                                    }
+                                    value={field.value}
                                   >
-                                    {picklistValue.label}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <input
-                                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
-                                onChange={(event) =>
-                                  updateFieldValue(field.apiName, event.target.value)
-                                }
-                                value={field.value}
-                              />
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                                    {field.picklistValues.length ? (
+                                      field.picklistValues.map((recordType) => (
+                                        <option
+                                          key={recordType.value}
+                                          value={recordType.value}
+                                        >
+                                          {recordType.label}
+                                        </option>
+                                      ))
+                                    ) : (
+                                      <option value="">
+                                        No record types available
+                                      </option>
+                                    )}
+                                  </select>
+                                ) : field.dataType === "boolean" ? (
+                                  <select
+                                    className="w-full rounded-lg border border-orange-200 bg-white px-3 py-2 text-indigo-950 outline-none focus:border-purple-600 focus:ring-4 focus:ring-purple-100"
+                                    onChange={(event) =>
+                                      updateFieldValue(
+                                        field.apiName,
+                                        event.target.value,
+                                      )
+                                    }
+                                    value={field.value}
+                                  >
+                                    <option value="true">true</option>
+                                    <option value="false">false</option>
+                                  </select>
+                                ) : field.dataType === "picklist" ? (
+                                  <select
+                                    className="w-full rounded-lg border border-orange-200 bg-white px-3 py-2 text-indigo-950 outline-none focus:border-purple-600 focus:ring-4 focus:ring-purple-100"
+                                    onChange={(event) =>
+                                      updateFieldValue(
+                                        field.apiName,
+                                        event.target.value,
+                                      )
+                                    }
+                                    value={field.value}
+                                  >
+                                    <option value="">Select a value</option>
+                                    {field.picklistValues.map((picklistValue) => (
+                                      <option
+                                        key={picklistValue.value}
+                                        value={picklistValue.value}
+                                      >
+                                        {picklistValue.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <input
+                                    className="w-full rounded-lg border border-orange-200 px-3 py-2 text-indigo-950 outline-none focus:border-purple-600 focus:ring-4 focus:ring-purple-100"
+                                    onChange={(event) =>
+                                      updateFieldValue(
+                                        field.apiName,
+                                        event.target.value,
+                                      )
+                                    }
+                                    value={field.value}
+                                  />
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="bg-blue-50 px-4 py-8 text-center text-sm text-blue-900">
+                      No supported creatable fields were found for this object.
+                    </div>
+                  )}
                 </div>
               ) : (
-                <div className="bg-slate-50 px-4 py-8 text-center text-sm text-slate-600">
-                  No supported creatable fields were found for this object.
+                <div
+                  className="border-t border-orange-200 bg-blue-50 px-4 py-3 text-sm text-blue-900"
+                  id="salesforce-fields-section"
+                >
+                  Fields are hidden. Click the header to show the fields for{" "}
+                  {selectedObjectLabel}.
                 </div>
               )}
             </div>
+
+            <div className="rounded-2xl border border-purple-200 bg-purple-50/60">
+              <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-indigo-950">
+                    Create multiple related records
+                  </h2>
+                  <p className="mt-1 text-sm leading-6 text-indigo-900/70">
+                    Add Opportunity, Contact, Case, Task, or any available
+                    related object and create child records for every{" "}
+                    {selectedObjectLabel} record.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2 sm:items-end">
+                  <div className="rounded-xl bg-white px-3 py-2 text-sm font-semibold text-purple-900">
+                    {relatedRecordConfigs.length
+                      ? `${relatedRecordConfigs.length} related object ${
+                          relatedRecordConfigs.length === 1 ? "type" : "types"
+                        } selected`
+                      : "No related objects selected"}
+                  </div>
+
+                  {relatedRecordConfigs.length ? (
+                    <button
+                      className="rounded-xl border border-purple-200 bg-white px-4 py-2 text-sm font-semibold text-indigo-950 transition hover:bg-purple-100"
+                      onClick={() =>
+                        setAllRelatedConfigsCollapsed(
+                          !areAllRelatedRecordsCollapsed,
+                        )
+                      }
+                      type="button"
+                    >
+                      {areAllRelatedRecordsCollapsed
+                        ? "Expand all related records"
+                        : "Collapse all related records"}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="space-y-4 border-t border-purple-200 p-4">
+                <div className="grid gap-4 lg:grid-cols-[1fr_auto]">
+                  <div>
+                    <label
+                      className="mb-2 block text-sm font-medium text-indigo-950"
+                      htmlFor="new-related-object"
+                    >
+                      Add related object
+                    </label>
+                    <select
+                      className="w-full rounded-xl border border-purple-200 bg-white px-4 py-3 text-indigo-950 outline-none transition focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
+                      disabled={
+                        isLoadingRelatedObjects || !relatedObjectOptions.length
+                      }
+                      id="new-related-object"
+                      onChange={(event) =>
+                        setNewRelatedObjectKey(event.target.value)
+                      }
+                      value={newRelatedObjectKey}
+                    >
+                      <option value="">
+                        {relatedObjectOptions.length
+                          ? "Select a related object"
+                          : "No more related objects available"}
+                      </option>
+                      {relatedObjectOptions.map((object) => (
+                        <option
+                          key={`${object.name}-${object.fieldApiName}`}
+                          value={`${object.name}|${object.fieldApiName}`}
+                        >
+                          {object.label} ({object.name}) via{" "}
+                          {object.fieldApiName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-end">
+                    <button
+                      className="w-full rounded-xl bg-purple-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-purple-600/20 transition hover:bg-purple-700 disabled:cursor-not-allowed disabled:bg-indigo-300 disabled:shadow-none lg:w-auto"
+                      disabled={!newRelatedObjectKey}
+                      onClick={() => handleAddRelatedObject()}
+                      type="button"
+                    >
+                      Add related object
+                    </button>
+                  </div>
+                </div>
+
+                {preferredRelatedObjects.length ? (
+                  <div className="flex flex-wrap gap-2">
+                    {preferredRelatedObjects.map((object) => (
+                      <button
+                        className="rounded-full border border-purple-200 bg-white px-3 py-1.5 text-xs font-semibold text-purple-900 transition hover:bg-purple-100"
+                        key={`${object.name}-${object.fieldApiName}`}
+                        onClick={() =>
+                          handleAddRelatedObject(
+                            `${object.name}|${object.fieldApiName}`,
+                          )
+                        }
+                        type="button"
+                      >
+                        + {object.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
+                {isLoadingRelatedObjects ? (
+                  <div className="rounded-2xl bg-purple-100/70 px-4 py-8 text-center text-sm text-purple-950">
+                    Loading related objects...
+                  </div>
+                ) : !relatedObjects.length ? (
+                  <div className="rounded-2xl bg-purple-100/70 px-4 py-8 text-center text-sm text-purple-950">
+                    No createable related objects were found for{" "}
+                    {selectedObjectLabel}.
+                  </div>
+                ) : !relatedRecordConfigs.length ? (
+                  <div className="rounded-2xl bg-purple-100/70 px-4 py-8 text-center text-sm text-purple-950">
+                    Add one or more related objects to create child records
+                    with each {selectedObjectLabel} record.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {relatedRecordConfigs.map((config) => (
+                      <div
+                        className="overflow-hidden rounded-2xl border border-purple-200 bg-white"
+                        key={config.id}
+                      >
+                        <div className="flex flex-col gap-4 bg-purple-100/70 p-4 lg:flex-row lg:items-end lg:justify-between">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-purple-700">
+                              Related object
+                            </p>
+                            <h3 className="mt-1 text-lg font-semibold text-indigo-950">
+                              {getRelatedObjectLabel(config)} (
+                              {config.objectApiName})
+                            </h3>
+                            <p className="mt-1 text-sm text-indigo-900/70">
+                              Linked through {config.lookupFieldApiName}.
+                            </p>
+                          </div>
+
+                          <div className="grid gap-3 sm:grid-cols-[180px_auto_auto_auto] sm:items-end">
+                            <div>
+                              <label
+                                className="mb-2 block text-sm font-medium text-indigo-950"
+                                htmlFor={`multi-related-count-${config.id}`}
+                              >
+                                Records per {selectedObjectLabel}
+                              </label>
+                              <input
+                                className="w-full rounded-xl border border-purple-200 bg-white px-4 py-3 text-indigo-950 outline-none transition focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
+                                id={`multi-related-count-${config.id}`}
+                                max={50}
+                                min={1}
+                                onChange={(event) =>
+                                  updateRelatedRecordCount(
+                                    config.id,
+                                    Number.parseInt(event.target.value, 10),
+                                  )
+                                }
+                                type="number"
+                                value={config.recordCount}
+                              />
+                            </div>
+
+                            <button
+                              className="rounded-xl border border-purple-200 bg-white px-4 py-3 text-sm font-semibold text-indigo-950 transition hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-60"
+                              disabled={
+                                config.isLoadingFields || !config.fieldRows.length
+                              }
+                              onClick={() => refreshRelatedSampleValues(config.id)}
+                              type="button"
+                            >
+                              Generate values
+                            </button>
+
+                            <button
+                              className="rounded-xl border border-purple-200 bg-white px-4 py-3 text-sm font-semibold text-indigo-950 transition hover:bg-purple-50"
+                              onClick={() =>
+                                toggleRelatedConfigCollapse(config.id)
+                              }
+                              type="button"
+                            >
+                              {config.isCollapsed ? "Expand" : "Collapse"}
+                            </button>
+
+                            <button
+                              className="rounded-xl border border-red-200 bg-white px-4 py-3 text-sm font-semibold text-red-700 transition hover:bg-red-50"
+                              onClick={() => handleRemoveRelatedObject(config.id)}
+                              type="button"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-3 border-t border-purple-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                          <label className="flex items-center gap-2 text-sm font-medium text-indigo-950">
+                            <input
+                              checked={config.clearGeneratedValues}
+                              className="h-4 w-4 rounded border-purple-300 text-purple-600 focus:ring-orange-500"
+                              disabled={
+                                config.isLoadingFields || !config.fieldRows.length
+                              }
+                              onChange={(event) =>
+                                handleClearRelatedGeneratedValues(
+                                  config.id,
+                                  event.target.checked,
+                                )
+                              }
+                              type="checkbox"
+                            />
+                            Clear generated values for this related object
+                          </label>
+
+                          <p className="text-sm text-purple-950">
+                            Creates {recordCount * config.recordCount}{" "}
+                            {getRelatedObjectLabel(config)}{" "}
+                            {recordCount * config.recordCount === 1
+                              ? "record"
+                              : "records"}
+                          </p>
+                        </div>
+
+                        {config.isCollapsed ? (
+                          <div className="border-t border-purple-200 bg-purple-50 px-4 py-3 text-sm text-purple-950">
+                            Fields are collapsed for{" "}
+                            {getRelatedObjectLabel(config)}. Expand this related
+                            record to edit values.
+                          </div>
+                        ) : config.isLoadingFields ? (
+                          <div className="bg-purple-100/70 px-4 py-8 text-center text-sm text-purple-950">
+                            Loading {getRelatedObjectLabel(config)} fields...
+                          </div>
+                        ) : config.fieldRows.length ? (
+                          <div className="grid gap-3 border-t border-purple-200 p-4 md:grid-cols-2">
+                            {config.fieldRows.map((field) => (
+                              <label
+                                className="block text-sm font-medium text-indigo-950"
+                                key={field.apiName}
+                              >
+                                <span>
+                                  {field.label}
+                                  {field.required ? (
+                                    <span className="ml-1 font-bold text-orange-700">
+                                      *
+                                    </span>
+                                  ) : null}
+                                </span>
+                                <span className="mt-1 block font-mono text-xs text-blue-900">
+                                  {field.apiName} ({field.dataType})
+                                </span>
+                                {field.dataType === "recordtype" ||
+                                field.dataType === "boolean" ||
+                                field.dataType === "picklist" ? (
+                                  <select
+                                    className="mt-2 w-full rounded-lg border border-purple-200 bg-white px-3 py-2 text-indigo-950 outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-100 disabled:cursor-not-allowed disabled:bg-purple-50 disabled:text-indigo-400"
+                                    disabled={field.disabled}
+                                    onChange={(event) =>
+                                      updateRelatedFieldValue(
+                                        config.id,
+                                        field.apiName,
+                                        event.target.value,
+                                      )
+                                    }
+                                    value={field.value}
+                                  >
+                                    {field.dataType === "recordtype" ? (
+                                      field.picklistValues.length ? (
+                                        field.picklistValues.map((recordType) => (
+                                          <option
+                                            key={recordType.value}
+                                            value={recordType.value}
+                                          >
+                                            {recordType.label}
+                                          </option>
+                                        ))
+                                      ) : (
+                                        <option value="">
+                                          No record types available
+                                        </option>
+                                      )
+                                    ) : field.dataType === "boolean" ? (
+                                      <>
+                                        <option value="true">true</option>
+                                        <option value="false">false</option>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <option value="">Select a value</option>
+                                        {field.picklistValues.map(
+                                          (picklistValue) => (
+                                            <option
+                                              key={picklistValue.value}
+                                              value={picklistValue.value}
+                                            >
+                                              {picklistValue.label}
+                                            </option>
+                                          ),
+                                        )}
+                                      </>
+                                    )}
+                                  </select>
+                                ) : (
+                                  <input
+                                    className="mt-2 w-full rounded-lg border border-purple-200 px-3 py-2 text-indigo-950 outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
+                                    onChange={(event) =>
+                                      updateRelatedFieldValue(
+                                        config.id,
+                                        field.apiName,
+                                        event.target.value,
+                                      )
+                                    }
+                                    value={field.value}
+                                  />
+                                )}
+                              </label>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="bg-purple-100/70 px-4 py-8 text-center text-sm text-purple-950">
+                            No supported creatable fields were found for{" "}
+                            {getRelatedObjectLabel(config)}.
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Legacy single-related-record panel removed from render path to keep field editing responsive.
+              <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <button
+                  aria-controls="related-fields-section"
+                  aria-expanded={isRelatedSectionOpen}
+                  className="group flex items-start gap-3 rounded-2xl px-2 py-1 text-left transition hover:bg-purple-100/70"
+                  onClick={() =>
+                    setIsRelatedSectionOpen((currentValue) => !currentValue)
+                  }
+                  type="button"
+                >
+                  <span
+                    className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-purple-600 to-blue-600 text-sm font-bold text-white shadow-lg shadow-purple-500/20 transition duration-300 group-hover:scale-105 ${
+                      isRelatedSectionOpen ? "rotate-90" : ""
+                    }`}
+                    aria-hidden="true"
+                  >
+                    &gt;
+                  </span>
+                  <span>
+                    <span className="flex items-center gap-2 text-lg font-semibold text-indigo-950">
+                      Create related records
+                    </span>
+                    <span className="mt-1 block text-sm leading-6 text-indigo-900/70">
+                      Select a related object and create child records for every{" "}
+                      {selectedObjectLabel} record.
+                    </span>
+                  </span>
+                </button>
+
+                {selectedRelatedObject ? (
+                  <div className="flex flex-col gap-3 sm:items-end">
+                    <label className="flex items-center gap-2 text-sm font-medium text-indigo-950">
+                      <input
+                        checked={clearRelatedGeneratedValues}
+                        className="h-4 w-4 rounded border-purple-300 text-purple-600 focus:ring-orange-500"
+                        disabled={isLoadingRelatedFields || !relatedFieldRows.length}
+                        onChange={(event) =>
+                          handleClearRelatedGeneratedValues(event.target.checked)
+                        }
+                        type="checkbox"
+                      />
+                      Clear related values
+                    </label>
+
+                    <button
+                      className="rounded-xl border border-purple-200 bg-white px-4 py-2 text-sm font-semibold text-indigo-950 transition hover:bg-purple-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={isLoadingRelatedFields || !relatedFieldRows.length}
+                      onClick={() => refreshRelatedSampleValues()}
+                      type="button"
+                    >
+                      Generate related values
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+
+              {isRelatedSectionOpen ? (
+                <div
+                  className="overflow-hidden border-t border-purple-200"
+                  id="related-fields-section"
+                >
+                  <div className="grid gap-4 p-4 sm:grid-cols-[1fr_220px]">
+                    <div>
+                      <label
+                        className="mb-2 block text-sm font-medium text-indigo-950"
+                        htmlFor="related-object"
+                      >
+                        Related object
+                      </label>
+                      <select
+                        className="w-full rounded-xl border border-purple-200 bg-white px-4 py-3 text-indigo-950 outline-none transition focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
+                        disabled={isLoadingRelatedObjects || !relatedObjects.length}
+                        id="related-object"
+                        onChange={(event) => {
+                          const nextRelatedObject = relatedObjects.find(
+                            (object) =>
+                              `${object.name}|${object.fieldApiName}` ===
+                              event.target.value,
+                          );
+
+                          setClearRelatedGeneratedValues(false);
+                          setSelectedRelatedObject(nextRelatedObject?.name ?? "");
+                          setSelectedRelatedLookupField(
+                            nextRelatedObject?.fieldApiName ?? "",
+                          );
+                          setRelatedFieldRows([]);
+                        }}
+                        value={
+                          selectedRelatedObject && selectedRelatedLookupField
+                            ? `${selectedRelatedObject}|${selectedRelatedLookupField}`
+                            : ""
+                        }
+                      >
+                        <option value="">Do not create related records</option>
+                        {relatedObjects.map((object) => (
+                          <option
+                            key={`${object.name}-${object.fieldApiName}`}
+                            value={`${object.name}|${object.fieldApiName}`}
+                          >
+                            {object.label} ({object.name}) via{" "}
+                            {object.fieldApiName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label
+                        className="mb-2 block text-sm font-medium text-indigo-950"
+                        htmlFor="related-record-count"
+                      >
+                        Records per {selectedObjectLabel}
+                      </label>
+                      <input
+                        className="w-full rounded-xl border border-purple-200 bg-white px-4 py-3 text-indigo-950 outline-none transition focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
+                        disabled={!selectedRelatedObject}
+                        id="related-record-count"
+                        max={50}
+                        min={1}
+                        onChange={(event) =>
+                          setRelatedRecordCount(
+                            Math.min(
+                              50,
+                              Math.max(
+                                1,
+                                Number.parseInt(event.target.value, 10) || 1,
+                              ),
+                            ),
+                          )
+                        }
+                        type="number"
+                        value={relatedRecordCount}
+                      />
+                    </div>
+                  </div>
+
+                  {isLoadingRelatedObjects ? (
+                    <div className="bg-purple-100/70 px-4 py-8 text-center text-sm text-purple-950">
+                      Loading related objects...
+                    </div>
+                  ) : !relatedObjects.length ? (
+                    <div className="bg-purple-100/70 px-4 py-8 text-center text-sm text-purple-950">
+                      No createable related objects were found for{" "}
+                      {selectedObjectLabel}.
+                    </div>
+                  ) : !selectedRelatedObject ? (
+                    <div className="bg-purple-100/70 px-4 py-8 text-center text-sm text-purple-950">
+                      Select a related object to load its fields.
+                    </div>
+                  ) : isLoadingRelatedFields ? (
+                    <div className="bg-purple-100/70 px-4 py-8 text-center text-sm text-purple-950">
+                      Loading related fields...
+                    </div>
+                  ) : relatedFieldRows.length ? (
+                    <div className="max-h-[55vh] overflow-y-auto overflow-x-hidden">
+                      <table className="w-full table-fixed divide-y divide-purple-100 text-left text-sm">
+                        <thead className="sticky top-0 z-10 bg-purple-100 text-xs uppercase tracking-wide text-indigo-900">
+                          <tr>
+                            <th className="w-[24%] px-4 py-3 font-semibold">
+                              Field Name
+                            </th>
+                            <th className="w-[30%] px-4 py-3 font-semibold">API</th>
+                            <th className="w-[14%] px-4 py-3 font-semibold">
+                              Data Type
+                            </th>
+                            <th className="w-[32%] px-4 py-3 font-semibold">Value</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-purple-100 bg-white">
+                          {relatedFieldRows.map((field) => (
+                            <tr key={field.apiName} className="align-top">
+                              <td className="break-words px-4 py-3 font-medium text-indigo-950">
+                                <div
+                                  className={
+                                    field.required
+                                      ? "rounded-lg border border-orange-300 bg-orange-50 px-3 py-2 text-orange-700"
+                                      : ""
+                                  }
+                                >
+                                  {field.label}
+                                  {field.required ? (
+                                    <span className="ml-1 font-bold">*</span>
+                                  ) : null}
+                                </div>
+                              </td>
+                              <td className="break-all px-4 py-3 font-mono text-xs text-blue-900">
+                                {field.apiName}
+                              </td>
+                              <td className="break-words px-4 py-3 text-indigo-900/70">
+                                {field.dataType}
+                              </td>
+                              <td className="px-4 py-3">
+                                {field.dataType === "recordtype" ? (
+                                  <select
+                                    className="w-full rounded-lg border border-purple-200 bg-white px-3 py-2 text-indigo-950 outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-100 disabled:cursor-not-allowed disabled:bg-purple-50 disabled:text-indigo-400"
+                                    disabled={field.disabled}
+                                    onChange={(event) =>
+                                      updateRelatedFieldValue(
+                                        field.apiName,
+                                        event.target.value,
+                                      )
+                                    }
+                                    value={field.value}
+                                  >
+                                    {field.picklistValues.length ? (
+                                      field.picklistValues.map((recordType) => (
+                                        <option
+                                          key={recordType.value}
+                                          value={recordType.value}
+                                        >
+                                          {recordType.label}
+                                        </option>
+                                      ))
+                                    ) : (
+                                      <option value="">
+                                        No record types available
+                                      </option>
+                                    )}
+                                  </select>
+                                ) : field.dataType === "boolean" ? (
+                                  <select
+                                    className="w-full rounded-lg border border-purple-200 bg-white px-3 py-2 text-indigo-950 outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
+                                    onChange={(event) =>
+                                      updateRelatedFieldValue(
+                                        field.apiName,
+                                        event.target.value,
+                                      )
+                                    }
+                                    value={field.value}
+                                  >
+                                    <option value="true">true</option>
+                                    <option value="false">false</option>
+                                  </select>
+                                ) : field.dataType === "picklist" ? (
+                                  <select
+                                    className="w-full rounded-lg border border-purple-200 bg-white px-3 py-2 text-indigo-950 outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
+                                    onChange={(event) =>
+                                      updateRelatedFieldValue(
+                                        field.apiName,
+                                        event.target.value,
+                                      )
+                                    }
+                                    value={field.value}
+                                  >
+                                    <option value="">Select a value</option>
+                                    {field.picklistValues.map((picklistValue) => (
+                                      <option
+                                        key={picklistValue.value}
+                                        value={picklistValue.value}
+                                      >
+                                        {picklistValue.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <input
+                                    className="w-full rounded-lg border border-purple-200 px-3 py-2 text-indigo-950 outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-100"
+                                    onChange={(event) =>
+                                      updateRelatedFieldValue(
+                                        field.apiName,
+                                        event.target.value,
+                                      )
+                                    }
+                                    value={field.value}
+                                  />
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="bg-purple-100/70 px-4 py-8 text-center text-sm text-purple-950">
+                      No supported creatable fields were found for{" "}
+                      {selectedRelatedObjectLabel}.
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div
+                  className="border-t border-purple-200 bg-purple-100/70 px-4 py-3 text-sm text-purple-950"
+                  id="related-fields-section"
+                >
+                  Related record options are hidden. Click the header to show
+                  them.
+                </div>
+              )}
+            */}
 
             {error ? (
               <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-6 text-red-700">
@@ -999,14 +2040,25 @@ export default function ObjectsPage() {
             ) : null}
 
             <button
-              className="w-full rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200 disabled:cursor-not-allowed disabled:bg-slate-400 disabled:shadow-none"
-              disabled={isCreating || isLoadingFields || !selectedObject}
+              className="w-full rounded-xl bg-orange-600 px-4 py-3 font-semibold text-white shadow-lg shadow-orange-600/25 transition hover:bg-orange-700 focus:outline-none focus:ring-4 focus:ring-purple-200 disabled:cursor-not-allowed disabled:bg-indigo-300 disabled:shadow-none"
+              disabled={
+                isCreating ||
+                isLoadingFields ||
+                isLoadingAnyRelatedFields ||
+                !selectedObject
+              }
               type="submit"
             >
               {isCreating
                 ? "Creating records..."
                 : `Create ${recordCount} ${
                     recordCount === 1 ? "record" : "records"
+                  }${
+                    totalRelatedRecordCount
+                      ? ` + ${totalRelatedRecordCount} related ${
+                          totalRelatedRecordCount === 1 ? "record" : "records"
+                        }`
+                      : ""
                   }`}
             </button>
           </form>

@@ -49,16 +49,16 @@ export default function Home() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-950 px-6 py-12">
-      <section className="w-full max-w-md rounded-3xl border border-white/10 bg-white p-8 shadow-2xl shadow-slate-950/30">
+    <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-orange-100 via-white to-purple-100 px-6 py-12">
+      <section className="w-full max-w-md rounded-3xl border border-orange-200/70 bg-white/95 p-8 shadow-2xl shadow-orange-900/15 backdrop-blur">
         <div className="mb-8">
-          <p className="mb-3 text-sm font-semibold uppercase tracking-[0.3em] text-blue-600">
+          <p className="mb-3 text-sm font-semibold uppercase tracking-[0.3em] text-orange-600">
             Salesforce
           </p>
-          <h1 className="text-3xl font-bold tracking-tight text-slate-950">
+          <h1 className="text-3xl font-bold tracking-tight text-indigo-950">
             Login to continue
           </h1>
-          <p className="mt-3 text-sm leading-6 text-slate-600">
+          <p className="mt-3 text-sm leading-6 text-indigo-900/70">
             Enter your Salesforce username and password. After login, this app
             will be able to create records in your Salesforce object.
           </p>
@@ -67,13 +67,13 @@ export default function Home() {
         <form className="space-y-5" onSubmit={handleSubmit}>
           <div>
             <label
-              className="mb-2 block text-sm font-medium text-slate-700"
+              className="mb-2 block text-sm font-medium text-indigo-950"
               htmlFor="salesforce-environment"
             >
               Salesforce environment
             </label>
             <select
-              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+              className="w-full rounded-xl border border-orange-200 bg-white px-4 py-3 text-indigo-950 outline-none transition focus:border-purple-600 focus:ring-4 focus:ring-purple-100"
               defaultValue="production"
               id="salesforce-environment"
               name="environment"
@@ -85,13 +85,13 @@ export default function Home() {
 
           <div>
             <label
-              className="mb-2 block text-sm font-medium text-slate-700"
+              className="mb-2 block text-sm font-medium text-indigo-950"
               htmlFor="salesforce-username"
             >
               Salesforce username
             </label>
             <input
-              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+              className="w-full rounded-xl border border-orange-200 px-4 py-3 text-indigo-950 outline-none transition focus:border-purple-600 focus:ring-4 focus:ring-purple-100"
               id="salesforce-username"
               name="username"
               placeholder="you@example.com"
@@ -102,13 +102,13 @@ export default function Home() {
 
           <div>
             <label
-              className="mb-2 block text-sm font-medium text-slate-700"
+              className="mb-2 block text-sm font-medium text-indigo-950"
               htmlFor="salesforce-password"
             >
               Salesforce password
             </label>
             <input
-              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+              className="w-full rounded-xl border border-orange-200 px-4 py-3 text-indigo-950 outline-none transition focus:border-purple-600 focus:ring-4 focus:ring-purple-100"
               id="salesforce-password"
               name="password"
               placeholder="Enter your password"
@@ -124,7 +124,7 @@ export default function Home() {
           ) : null}
 
           <button
-            className="w-full rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200 disabled:cursor-not-allowed disabled:bg-slate-400 disabled:shadow-none"
+            className="w-full rounded-xl bg-orange-600 px-4 py-3 font-semibold text-white shadow-lg shadow-orange-600/25 transition hover:bg-orange-700 focus:outline-none focus:ring-4 focus:ring-purple-200 disabled:cursor-not-allowed disabled:bg-indigo-300 disabled:shadow-none"
             disabled={isLoading}
             type="submit"
           >
@@ -132,7 +132,7 @@ export default function Home() {
           </button>
         </form>
 
-        <p className="mt-6 rounded-2xl bg-slate-100 px-4 py-3 text-xs leading-5 text-slate-600">
+        <p className="mt-6 rounded-2xl bg-blue-50 px-4 py-3 text-xs leading-5 text-blue-900">
           If your Salesforce org requires a security token, append it to the
           password field. Example: password + security token.
         </p>
