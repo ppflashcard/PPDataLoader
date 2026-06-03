@@ -1,65 +1,142 @@
-import Image from "next/image";
+"use client";
+
+import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
 
 export default function Home() {
+  const router = useRouter();
+  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setIsLoading(true);
+
+    const formData = new FormData(event.currentTarget);
+
+    try {
+      const response = await fetch("/api/salesforce/login", {
+        body: JSON.stringify({
+          environment: formData.get("environment"),
+          password: formData.get("password"),
+          username: formData.get("username"),
+        }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      });
+      const data = (await response.json()) as {
+        error?: string;
+        redirectTo?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Unable to login to Salesforce.");
+      }
+
+      router.push(data.redirectTo ?? "/objects");
+    } catch (caughtError) {
+      setError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Unable to login to Salesforce.",
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <main className="flex min-h-screen items-center justify-center bg-slate-950 px-6 py-12">
+      <section className="w-full max-w-md rounded-3xl border border-white/10 bg-white p-8 shadow-2xl shadow-slate-950/30">
+        <div className="mb-8">
+          <p className="mb-3 text-sm font-semibold uppercase tracking-[0.3em] text-blue-600">
+            Salesforce
+          </p>
+          <h1 className="text-3xl font-bold tracking-tight text-slate-950">
+            Login to continue
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="mt-3 text-sm leading-6 text-slate-600">
+            Enter your Salesforce username and password. After login, this app
+            will be able to create records in your Salesforce object.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+
+        <form className="space-y-5" onSubmit={handleSubmit}>
+          <div>
+            <label
+              className="mb-2 block text-sm font-medium text-slate-700"
+              htmlFor="salesforce-environment"
+            >
+              Salesforce environment
+            </label>
+            <select
+              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+              defaultValue="production"
+              id="salesforce-environment"
+              name="environment"
+            >
+              <option value="production">Production</option>
+              <option value="sandbox">Sandbox</option>
+            </select>
+          </div>
+
+          <div>
+            <label
+              className="mb-2 block text-sm font-medium text-slate-700"
+              htmlFor="salesforce-username"
+            >
+              Salesforce username
+            </label>
+            <input
+              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+              id="salesforce-username"
+              name="username"
+              placeholder="you@example.com"
+              type="email"
+              required
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          </div>
+
+          <div>
+            <label
+              className="mb-2 block text-sm font-medium text-slate-700"
+              htmlFor="salesforce-password"
+            >
+              Salesforce password
+            </label>
+            <input
+              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-slate-950 outline-none transition focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+              id="salesforce-password"
+              name="password"
+              placeholder="Enter your password"
+              type="password"
+              required
+            />
+          </div>
+
+          {error ? (
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-6 text-red-700">
+              {error}
+            </div>
+          ) : null}
+
+          <button
+            className="w-full rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white shadow-lg shadow-blue-600/20 transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200 disabled:cursor-not-allowed disabled:bg-slate-400 disabled:shadow-none"
+            disabled={isLoading}
+            type="submit"
           >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+            {isLoading ? "Connecting..." : "Login with Salesforce"}
+          </button>
+        </form>
+
+        <p className="mt-6 rounded-2xl bg-slate-100 px-4 py-3 text-xs leading-5 text-slate-600">
+          If your Salesforce org requires a security token, append it to the
+          password field. Example: password + security token.
+        </p>
+      </section>
+    </main>
   );
 }
